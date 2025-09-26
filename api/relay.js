@@ -1,52 +1,64 @@
+// /api/relay.js  — Secure Relay for Coze v3/chat (Node 18+ on Vercel)
+
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+  // ---- CORS ----
+  const ORIGIN = process.env.ALLOWED_ORIGIN || "*";
+  res.setHeader("Access-Control-Allow-Origin", ORIGIN);
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
   try {
-    const { message, user_id = "123456789" } = req.body;
+    // 兼容某些平台把 JSON 当字符串转发的情况
+    const inBody = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
+    const { role = "student", message = "", user_id } = inBody;
 
-    if (!message) {
-      return res.status(400).json({ error: "Missing message in request body" });
+    if (!message || typeof message !== "string") {
+      return res.status(400).json({ error: "Missing or invalid `message`" });
     }
 
-    // 固定写死的 Key 和 Bot ID（你提供的值）
-    const COZE_API_KEY =
-      "cztei_hqwB62td9lhIT3tOaqaOgTEdKa3092iKhZcR56OOXU285whjBa3gaZr4xNPFXVuAZ";
-    const COZE_BOT_ID = "7554033269068267570";
+    // 从环境变量读取敏感信息（安全做法）
+    const API_KEY = process.env.COZE_API_KEY;     // e.g. cztei_********
+    const BOT_ID  = process.env.COZE_BOT_ID;      // e.g. 7554********
+    const API_URL = process.env.COZE_API_BASE || "https://api.coze.cn/v3/chat";
 
-    // 请求 Coze API
-    const response = await fetch("https://api.coze.cn/v3/chat", {
+    if (!API_KEY || !BOT_ID) {
+      return res.status(500).json({ error: "Server not configured: COZE_API_KEY / COZE_BOT_ID" });
+    }
+
+    // 组装 v3/chat 的请求体（非流式，便于前端处理）
+    const payload = {
+      bot_id: BOT_ID,
+      user_id: user_id || `web_${role}_${Date.now()}`,
+      stream: false,
+      additional_messages: [
+        { content: message, content_type: "text", role: "user", type: "question" }
+      ]
+    };
+
+    const r = await fetch(API_URL, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${COZE_API_KEY}`,
-        "Content-Type": "application/json",
+        "Authorization": `Bearer ${API_KEY}`,
+        "Content-Type": "application/json"
       },
-      body: JSON.stringify({
-        bot_id: COZE_BOT_ID,
-        user_id,
-        stream: false, // 简化处理，先不做 SSE
-        additional_messages: [
-          {
-            role: "user",
-            type: "question",
-            content: message,
-            content_type: "text",
-          },
-        ],
-        parameters: {},
-      }),
+      body: JSON.stringify(payload)
     });
 
-    const data = await response.json();
+    // 将上游状态码透传，便于定位鉴权/参数问题
+    const data = await r.json().catch(() => ({}));
 
-    if (!response.ok) {
-      return res.status(response.status).json({ error: data });
-    }
+    // 统一抽取回复文本（不同版本字段名可能不同）
+    const reply =
+      data?.reply ||
+      data?.data?.reply ||
+      data?.messages?.[0]?.content ||
+      null;
 
-    return res.status(200).json(data);
-  } catch (error) {
-    console.error("Relay error:", error);
-    return res.status(500).json({ error: "Internal server error" });
+    // 生产环境建议仅返回 { reply }，如需诊断可临时加上 raw
+    return res.status(r.status).json(reply !== null ? { reply } : data);
+  } catch (e) {
+    return res.status(500).json({ error: String(e?.message || e) });
   }
 }
