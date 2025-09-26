@@ -1,57 +1,52 @@
-// /api/relay.js — Vercel Serverless Function (Node 18+)
-
 export default async function handler(req, res) {
-  // --- CORS ---
-  const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "*";
-  res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  if (req.method === "OPTIONS") return res.status(204).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
   try {
-    // 兼容 body 可能是字符串或对象
-    const bodyIn = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
-    const { role = "student", message = "" } = bodyIn;
-    if (!message) return res.status(400).json({ error: "Missing message" });
+    const { message, user_id = "123456789" } = req.body;
 
-    const COZE_API_TOKEN = process.env.COZE_API_KEY; // ← 在 Vercel 环境变量中设置
-    const COZE_BOT_ID   = process.env.COZE_BOT_ID;   // ← 在 Vercel 环境变量中设置
-    const COZE_API      = process.env.COZE_API_BASE || "https://api.coze.cn/v3/chat";
-    if (!COZE_API_TOKEN || !COZE_BOT_ID) {
-      return res.status(500).json({ error: "Server not configured: COZE_API_KEY / COZE_BOT_ID" });
+    if (!message) {
+      return res.status(400).json({ error: "Missing message in request body" });
     }
 
-    // 组装 Coze v3/chat 请求体（非流式）
-    const payload = {
-      bot_id: COZE_BOT_ID,
-      user_id: `web_${role}_${Date.now()}`,
-      stream: false,
-      additional_messages: [
-        { content: message, content_type: "text", role: "user", type: "question" }
-      ]
-    };
+    // 固定写死的 Key 和 Bot ID（你提供的值）
+    const COZE_API_KEY =
+      "cztei_hqwB62td9lhIT3tOaqaOgTEdKa3092iKhZcR56OOXU285whjBa3gaZr4xNPFXVuAZ";
+    const COZE_BOT_ID = "7554033269068267570";
 
-    const r = await fetch(COZE_API, {
+    // 请求 Coze API
+    const response = await fetch("https://api.coze.cn/v3/chat", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${COZE_API_TOKEN}`,
-        "Content-Type": "application/json"
+        Authorization: `Bearer ${COZE_API_KEY}`,
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        bot_id: COZE_BOT_ID,
+        user_id,
+        stream: false, // 简化处理，先不做 SSE
+        additional_messages: [
+          {
+            role: "user",
+            type: "question",
+            content: message,
+            content_type: "text",
+          },
+        ],
+        parameters: {},
+      }),
     });
 
-    const data = await r.json().catch(() => ({}));
-    // 兼容不同返回结构
-    const reply =
-      data?.reply ||
-      data?.data?.reply ||
-      data?.messages?.[0]?.content ||
-      JSON.stringify(data);
+    const data = await response.json();
 
-    // 上线可去掉 raw 以减少泄露面
-    return res.status(200).json({ reply, raw: data });
-  } catch (e) {
-    return res.status(500).json({ error: String(e?.message || e) });
+    if (!response.ok) {
+      return res.status(response.status).json({ error: data });
+    }
+
+    return res.status(200).json(data);
+  } catch (error) {
+    console.error("Relay error:", error);
+    return res.status(500).json({ error: "Internal server error" });
   }
 }
